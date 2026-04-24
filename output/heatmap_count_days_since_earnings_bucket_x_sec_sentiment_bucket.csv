@@ -1,0 +1,5 @@
+days_since_earnings_bucket,Low,Medium,High
+0-5,40,32,20
+6-20,97,89,74
+21-60,227,217,188
+61+,166,169,156
