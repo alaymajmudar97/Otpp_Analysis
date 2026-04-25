@@ -1,6 +1,6 @@
 Master EDA outputs generated for df_features.csv
 Rows: 1,475
-Columns: 48
+Columns: 46
 Important files:
 - correlation_with_target.csv
 - numeric_summary.csv

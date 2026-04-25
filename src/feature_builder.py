@@ -279,4 +279,5 @@ def build_market_and_vol_features(df_golden):
     # This means today's row contains the actual volatility that occurred over the NEXT month.
     df['target_vol_21d'] = df['msft_return'].shift(-window).rolling(window).std() * np.sqrt(252)
     
-    return df
+    return 
+
