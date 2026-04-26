@@ -101,35 +101,65 @@ class NLPFeatureEngine:
     # ==========================================
     # PIPELINE 2: SEC FILINGS (Chunks -> Daily Aggregation)
     # ==========================================
-    def aggregate_sec_chunks(self, df_sec_chunks):
-        """
-        Rolls up already-scored SEC chunks into document-level daily features.
-        Assumes df_sec_chunks has 'pos', 'neg', and 'neutral' columns.
-        """
-        print(f"Aggregating {len(df_sec_chunks)} SEC chunks...")
-        df = df_sec_chunks.copy()
-        
-        # Calculate Net Sentiment if not already present
-        if 'sentiment_score' not in df.columns:
-            df['sentiment_score'] = df['pos'] - df['neg']
-            
-        # The Mathematical Rollup
-        sec_features = df.groupby('filing_date').agg(
-            sec_sentiment=('sentiment_score', 'mean'),
-            sec_neutral=('neutral_score', 'mean'),
-            sec_dispersion=('sentiment_score', 'std')
-        ).reset_index()
-        
-        sec_features['filing_date'] = pd.to_datetime(sec_features['filing_date'])
-        
-        # 2. Shift forward by 1 Business Day (skips weekends automatically)
-        sec_features['effective_date'] = sec_features['filing_date'] + BDay(1)
-        # Filings with only 1 chunk will return NaN for Standard Deviation. Fill with 0.
-        sec_features['sec_dispersion'] = sec_features['sec_dispersion'].fillna(0)
-        
-        return sec_features
-        
     
+
+def build_sec_features(df_raw):
+    """
+    Pulls raw SEC chunks, harmonizes Risk labels, calculates Mean & Std (Dispersion), 
+    and engineers QoQ Deltas and intra-document spreads.
+    """
+    print("Engineering MDA and Risk Sentiment Features...")
+    
+    
+    df_raw['filing_date'] = pd.to_datetime(df_raw['filing_date'])
+    
+    
+    df_raw['item_type'] = df_raw['item_type'].replace('RiskFactorsUpdate', 'RiskFactors')
+
+    # 1. Named Aggregation (Now including the Neutral mean)
+    df_grouped = df_raw.groupby(['doc_id', 'filing_date', 'item_type']).agg(
+        sentiment_mean=('sentiment_score', 'mean'),
+        sentiment_std=('sentiment_score', 'std'),
+        neutral_mean=('neutral_score', 'mean')
+    ).reset_index()
+
+    # 2. The Pivot (Fanning out 3 distinct metrics per section)
+    df_pivot = df_grouped.pivot_table(
+        index=['doc_id', 'filing_date'], 
+        columns='item_type', 
+        values=['sentiment_mean', 'sentiment_std', 'neutral_mean']
+    )
+
+    # 3. Flatten the Pivot MultiIndex
+    df_pivot.columns = [f"{col[1]}_{col[0]}" for col in df_pivot.columns]
+    df_pivot = df_pivot.reset_index()
+
+    # 4. Clean Renaming (Mapping all new columns)
+    df_pivot = df_pivot.rename(columns={
+        'MDA_sentiment_mean': 'MDA_Sentiment', 
+        'MDA_sentiment_std': 'MDA_Dispersion',
+        'MDA_neutral_mean': 'MDA_Neutrality',
+        'RiskFactors_sentiment_mean': 'Risk_Combined_Mean',
+        'RiskFactors_sentiment_std': 'Risk_Combined_Std',
+        'RiskFactors_neutral_mean': 'Risk_Combined_Neutrality'
+    })
+
+    # 5. The Time-Series Delta (Quarter-over-Quarter Change)
+    df_pivot = df_pivot.sort_values(by=['filing_date']).reset_index(drop=True)
+    df_pivot['MDA_Delta'] = df_pivot['MDA_Sentiment'].diff()
+    df_pivot['Risk_Delta'] = df_pivot['Risk_Combined_Mean'].diff()
+
+    # 6. The Executive vs Legal Spread
+    
+    # Fill any NaN standard deviations with 0
+    df_pivot = df_pivot.fillna({'MDA_Dispersion': 0, 'Risk_Combined_Std': 0})
+
+    # 7. The Look-Ahead Bias Protection (Effective Date T+1)
+    df_pivot['effective_date'] = df_pivot['filing_date'] + pd.Timedelta(days=1)
+    
+    print(f"Generated NLP features for {len(df_pivot)} documents.")
+    return df_pivot    
+
 def calculate_financial_ratios(df_fin):
     df = df_fin.copy()
     # Sort chronologically
@@ -168,7 +198,7 @@ def add_temporal_signals(df_golden):
     # ==========================================
     # If the NLP column is NOT missing (not NaN), an event happened that day.
     df['is_earnings_day'] = df['qa_sentiment'].notna()
-    df['is_filing_day'] = df['sec_sentiment'].notna()
+    df['is_filing_day'] = df['MDA_Sentiment'].notna()
     
     # ==========================================
     # 2. Anchor the Dates
@@ -279,5 +309,5 @@ def build_market_and_vol_features(df_golden):
     # This means today's row contains the actual volatility that occurred over the NEXT month.
     df['target_vol_21d'] = df['msft_return'].shift(-window).rolling(window).std() * np.sqrt(252)
     
-    return 
+    return df
 

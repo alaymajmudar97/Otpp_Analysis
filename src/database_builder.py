@@ -12,9 +12,9 @@ from dotenv import load_dotenv
 from edgar import Company, set_identity
 import earningscall
 
-# ==========================================
-# 0. DATABASE & API SETUP
-# ==========================================
+
+
+#Database Setup
 def get_db_connection():
     load_dotenv()
     try:
@@ -24,33 +24,37 @@ def get_db_connection():
         )
         return conn
     except Exception as e:
-        print(f"❌ Database Connection Error: {e}")
+        print(f" Database Connection Error: {e}")
         return None
 
 def setup_sec_api():
     """
     Initializes the edgartools SEC identity.
-    Requires SEC_API_USER_AGENT in your .env file (e.g., 'Name name@email.com')
+    Requires SEC_API_USER_AGENT in your .env file (e.g. 'Name name@email.com')
     """
     load_dotenv()
     user_agent = os.getenv("SEC_API_USER_AGENT")
     if not user_agent:
         raise ValueError("SEC_API_USER_AGENT not found in .env file.")
     set_identity(user_agent)
-    print(f"✅ SEC API Identity Set: {user_agent}")
+    print(f" SEC API Identity Set: {user_agent}")
 
+
+
+# Table Creation Scripts
 def create_tables(conn):
     """Creates all required tables if they don't exist."""
+
     print("Building database schemas...")
-    cursor = conn.cursor()
     
-    cursor.execute("""
+    conn.cursor.execute("""
     CREATE TABLE IF NOT EXISTS market_data (
         trading_date TEXT PRIMARY KEY, msft_close REAL, msft_volume INTEGER, 
-        msft_return REAL, vix_close REAL, tnx_yield REAL
+        msft_return REAL, vix_close REAL, tnx_yield REAL, msft_open REAL, msft_high REAL,
+        msft_low REAL, qqq_close Real, spy_close Real
     )""")
     
-    cursor.execute("""
+    conn.cursor.execute("""
     CREATE TABLE IF NOT EXISTS financial_filings_raw (
         filing_id TEXT PRIMARY KEY, ticker TEXT, filing_date TEXT, effective_date TEXT,
         fiscal_year INTEGER, fiscal_period TEXT, revenue REAL, net_income REAL,
@@ -58,13 +62,13 @@ def create_tables(conn):
         total_assets REAL, total_equity REAL
     )""")
     
-    cursor.execute("""
+    conn.cursor.execute("""
     CREATE TABLE IF NOT EXISTS sec_chunks (
         chunk_id TEXT PRIMARY KEY, doc_id TEXT, ticker TEXT, filing_date TEXT,
         item_type TEXT, chunk_index INTEGER, content TEXT, sentiment_score REAL
     )""")
     
-    cursor.execute("""
+    conn.cursor.execute("""
     CREATE TABLE IF NOT EXISTS transcripts (
         transcript_id TEXT PRIMARY KEY, ticker TEXT, event_timestamp TEXT, 
         effective_date TEXT, fiscal_year INTEGER, fiscal_period TEXT, 
@@ -72,45 +76,85 @@ def create_tables(conn):
     )""")
     
     conn.commit()
-    print("✅ All tables verified/created.")
+    print("All tables verified/created.")
 
 
-# ==========================================
-# 1. MARKET DATA PIPELINE
-# ==========================================
+
+#Market Data Pipeline
 def ingest_market_data(conn):
-    print("\n--- Starting Market Data Ingestion ---")
-    tickers = ["MSFT", "^VIX", "^TNX"]
-    data = yf.download(tickers, start="2018-01-01", end=datetime.today().strftime('%Y-%m-%d'), progress=False)
+    """
+    Fetches historical market and macro data for MSFT and key indices, calculates returns, and stores in Turso."""
     
-    if isinstance(data.columns, pd.MultiIndex):
-        closes = data['Close'].copy()
-        volumes = data['Volume']['MSFT'].copy()
-    else:
-        closes = data[['MSFT', '^VIX', '^TNX']]
-        volumes = data['Volume']
-
+    print("\n--- Starting Market Data Ingestion ---")
+    tickers = ["MSFT", "^VIX", "^TNX", 'QQQ', 'SPY']
+    start_date = "2018-01-01"
+    end_date = "2026-04-30" # Adjust to current date
+    
+    data = yf.download(tickers, start=start_date, end=end_date, progress=False)
+    
+    closes = data['Close'].copy()
+    volumes = data['Volume']['MSFT'].copy() # We only need MSFT volume
+    open = data['Open']['MSFT'].copy()
+    high = data['High']['MSFT'].copy()
+    low = data['Low']['MSFT'].copy()
+    
     df = pd.DataFrame(index=closes.index)
     df['msft_close'] = closes['MSFT']
     df['msft_volume'] = volumes
+    df['msft_open'] = open
+    df['msft_high'] = high
+    df['msft_low'] = low
     df['vix_close'] = closes['^VIX']
     df['tnx_yield'] = closes['^TNX']
+    df['qqq_close'] = closes['QQQ']
+    df['spy_close'] = closes['SPY']
     df['msft_return'] = np.log(df['msft_close'] / df['msft_close'].shift(1))
     df = df.dropna()
 
-    records = [(d.strftime('%Y-%m-%d'), float(r['msft_close']), int(r['msft_volume']), 
-                float(r['msft_return']), float(r['vix_close']), float(r['tnx_yield'])) 
-               for d, r in df.iterrows()]
-               
-    conn.cursor().executemany("INSERT OR REPLACE INTO market_data VALUES (?, ?, ?, ?, ?, ?)", records)
+    # Prepare for Turso ingestion
+    records = []
+    for date, row in df.iterrows():
+        # Format date to standard string YYYY-MM-DD
+        date_str = date.strftime('%Y-%m-%d')
+        records.append((
+            date_str, 
+            float(row['msft_close']), 
+            int(row['msft_volume']), 
+            float(row['msft_open']),
+            float(row['msft_high']),
+            float(row['msft_low']),
+            float(row['msft_return']), 
+            float(row['vix_close']), 
+            float(row['tnx_yield']),
+            float(row['qqq_close']),
+            float(row['spy_close'])
+        ))
+        
+    # Batch Insert
+    print(f"Pushing {len(records)} trading days to Turso...")
+    conn.cursor.executemany("""
+        INSERT OR REPLACE INTO market_data 
+        (trading_date, msft_close, msft_volume, msft_open, msft_high, msft_low, msft_return, vix_close, tnx_yield, qqq_close, spy_close) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, records)
+    
     conn.commit()
-    print(f"✅ Staged {len(records)} trading days to Turso.")
+    print("Market and Macro data successfully stored!")
 
 
-# ==========================================
-# 2. FINANCIALS PIPELINE
-# ==========================================
+
+# Financial Filings Pipeline
 def map_msft_fiscal_metadata(filing_date, form_type):
+    """
+    Helper function to determine fiscal year and period based on MSFT's unique fiscal calendar and filing type.
+
+    Args:
+        filing_date : datetime
+        form_type : str
+
+    Returns:
+        fiscal_year, fiscal_period
+    """
     month, year = filing_date.month, filing_date.year
     if "10-K" in form_type: return year, "FY"
     if month in [10, 11, 12]: return year + 1, "Q1"
@@ -119,13 +163,27 @@ def map_msft_fiscal_metadata(filing_date, form_type):
     return None, None
 
 def calculate_Q4(raw_df):
+    """
+    In order to provide quarterly update for the model, a manual process of calculating financial values
+    using 10-k and 10-Q form has been applied. 
+
+    Args:
+        raw_df: dataframe containing all the financial values for all 3 quarters. 
+    returns:
+        dataframe containing q4 financial values
+    Logic: 
+    For each year, we get quarter and FY specific records 
+    and we subtract, for example Q4 (income) = FY (income) - (All 3 quarter income)
+    
+    """
     final_records = []
     for year in sorted(raw_df['fiscal_year'].unique()):
         year_data = raw_df[raw_df['fiscal_year'] == year]
         qs = year_data[year_data['fiscal_period'].isin(['Q1', 'Q2', 'Q3'])]
         fy = year_data[year_data['fiscal_period'] == 'FY']
         
-        for _, row in qs.iterrows(): final_records.append(row.to_dict())
+        for _, row in qs.iterrows():
+            final_records.append(row.to_dict())
             
         if not fy.empty:
             if len(qs) == 3:
@@ -138,9 +196,9 @@ def calculate_Q4(raw_df):
                 fy_row['filing_id'] = fy_row['filing_id'].replace('FY', 'Q4')
                 final_records.append(fy_row.to_dict())
             else:
-                print(f" ⚠️ Alert: FY {year} missing Q1/Q2/Q3 filing. Cannot safely calculate Q4.")
+                print(f"  Alert: FY {year} missing Q1/Q2/Q3 filing. Cannot safely calculate Q4.")
         else:
-            print(f" ℹ️ Info: FY {year} is incomplete (No 10-K yet). Skipping Q4 calculation.")
+            print(f"  Info: FY {year} is incomplete (No 10-K yet). Skipping Q4 calculation.")
 
     clean_df = pd.DataFrame(final_records)
     clean_df['filing_date'] = clean_df['filing_date'].astype(str)
@@ -148,6 +206,13 @@ def calculate_Q4(raw_df):
     return clean_df.sort_values(['fiscal_year', 'fiscal_period'], ascending=[False, False]).reset_index(drop=True)
 
 def ingest_financials(conn, ticker="MSFT"):
+    
+    """
+    Ingest all Financial raw values using Edgar API. We use API obj() object to get 
+    financials, balance sheet and cash flow statements. 
+    All the data is stored at a quarter level  (inferred Q4 data) and stored inside DB
+    
+    """
     print("\n--- Starting Financials Ingestion ---")
     company = Company(ticker)
     filings = company.get_filings(form=["10-K", "10-Q"]).filter(filing_date="2019-01-01:")
@@ -192,13 +257,21 @@ def ingest_financials(conn, ticker="MSFT"):
         records
     )
     conn.commit()
-    print(f"✅ Staged {len(records)} financial quarters to Turso.")
+    print(f"Stored {len(records)} financial quarters to Turso.")
 
 
-# ==========================================
-# 3. SEC MD&A AND RISK CHUNKS PIPELINE
-# ==========================================
+#SEC (MD&A and Risk Factors) Pipeline
 def semantic_sentence_splitter(text, max_chars=1500):
+    """
+    Helper function to ensure sentence based chunking of sec filings and transcripts
+    and 512 token limit for finbert.  
+
+    Args:
+        text: "Msft Q3 revenue is.. " 
+        max_chars: "maximum character length for each chunk, default set to ~1500 to stay within 512 token limit of finbert"
+    Returns:
+        list of chunks 
+    """
     if not text: return []
     sentences = re.split(r'(?<=[.!?]) +', text)
     chunks, current_chunk = [], ""
@@ -211,7 +284,22 @@ def semantic_sentence_splitter(text, max_chars=1500):
     if current_chunk: chunks.append(current_chunk.strip())
     return chunks
 
-def isolate_alpha_chapters(raw_mda_text):
+def isolate_mda_blocks(raw_mda_text):
+    """
+   From MD&A raw text, isolate the most relevant sections that discuss economic conditions,\
+       fiscal year comparisons, and planned uses of capital.
+       This is done by identifying key section headers and extracting text until we hit a new section or irrelevant content.
+       This helps focus our analysis on the most forward-looking and decision-useful narrative content for our volatility prediction model.
+       We focus on sections that discuss economic conditions, fiscal year comparisons, and planned uses of capital,
+       as these are most likely to contain insights about future risks and opportunities that could impact stock volatility.
+       By filtering out less relevant sections (like detailed metrics or critical accounting policies),
+       we can reduce noise and improve the signal quality for our NLP analysis.
+    Args:
+        raw_mda_text: "Full MD&A text"
+
+    Returns:
+        A string containing only the most relevant MD&A sections for analysis.
+    """
     if not raw_mda_text: return ""
     target_regex = re.compile(r'Economic Conditions|Fiscal Year \d{4} Compared|Three Months Ended.*?Compared with|Other Planned Uses', re.IGNORECASE)
     stop_regex = re.compile(r'Metrics|Six Months Ended|Nine Months Ended|OTHER INCOME|INCOME TAXES|NON-GAAP|CRITICAL ACCOUNTING|STATEMENT OF MANAGEMENT', re.IGNORECASE)
@@ -221,17 +309,45 @@ def isolate_alpha_chapters(raw_mda_text):
     is_reading = False 
     for line in lines:
         line_str = line.strip()
-        if not line_str: continue
-        if target_regex.search(line_str): is_reading = True
-        if stop_regex.search(line_str): is_reading = False
-        if is_reading: extracted.append(line_str)
+        if not line_str:
+            continue
+        if target_regex.search(line_str):
+            is_reading = True
+        if stop_regex.search(line_str):
+            is_reading = False
+        if is_reading:
+            extracted.append(line_str)
     return "\n".join(extracted)
 
 def clean_mda_narrative(raw_text):
-    if not raw_text: return ""
+    """
+    Extracts pure narrative from raw MD&A  blocks 
+    by aggressively filtering out tabular data, financial headers, and numerical values related to tables.
+
+    Because SEC tables lose their HTML structure during text extraction, this function 
+    relies on density based estimate to differentiate between narrative NLP signal and 
+    numerical noise.
+    Args:
+        raw_text (str): The raw, unparsed text extracted from the SEC filing.
+
+    Returns:
+        str: The cleaned narrative string,       
+        
+    Filtering Criteria Applied:
+        1. Word Matching: Drops known table headers/footers (e.g., 'unaudited', 'in millions').
+        2. Regex Matching: Drops standard SEC comparative headers (e.g., 'Fiscal Year... Compared with').
+        3. Alphabetic Density: Drops lines where less than 50% of the characters are letters 
+           (effectively destroying rows of financial tables full of numbers and $ signs).
+        4. Word Count: Drops orphaned lines with fewer than 5 words to remove lingering sub-headers.    
+        """
+        
+        
+    if not raw_text:
+        return ""
+    
     lines = raw_text.replace('\r\n', '\n').split('\n')
     clean_lines = []
-    debris = {'three months ended', 'percentage change', 'in millions', 'unaudited', 'total revenue', 'gross margin', 'net income', 'operating expenses'}
+    words_to_remove = {'three months ended', 'percentage change', 'in millions', 'unaudited', 'total revenue', 'gross margin', 'net income', 'operating expenses'}
     comp_regex = r'(?:Fiscal Year|Three Months Ended|Six Months Ended).*?Compared with'
 
     for line in lines:
@@ -239,18 +355,27 @@ def clean_mda_narrative(raw_text):
         if not line_str:
             clean_lines.append("")
             continue
-        if line_str.lower() in debris or re.search(comp_regex, line_str, re.IGNORECASE): continue
+        if line_str.lower() in words_to_remove or re.search(comp_regex, line_str, re.IGNORECASE): continue
         
         t_chars = len(line_str)
-        if t_chars > 0 and (sum(c.isalpha() for c in line_str) / t_chars) < 0.5: continue 
+        if t_chars > 0 and (sum(c.isalpha() for c in line_str) / t_chars) < 0.5: continue  # Drop lines where less than 50% of characters are letters (likely tables)
         if len(line_str.split()) < 5: continue
         clean_lines.append(line_str)
 
     return re.sub(r'\n{3,}', '\n\n', "\n".join(clean_lines)).strip()
 
+
+
 def process_filing_to_chunks(filing, ticker, f_date):
-    try: doc = filing.obj()
-    except Exception: return []
+    """
+    For each filing (10-K, 10-Q) this function extracts md&a and risk section, cleans them for input to finbert model. 
+    
+    
+    """
+    try:
+        doc = filing.obj()
+    except Exception:
+        return []
 
     form = filing.form
     doc_id = f"{ticker}_{form.replace('-', '')}_{str(f_date).replace('-', '')}"
@@ -267,7 +392,7 @@ def process_filing_to_chunks(filing, ticker, f_date):
 
     # Process MD&A
     if mda_raw:
-        routed_mda = isolate_alpha_chapters(mda_raw)
+        routed_mda = isolate_mda_blocks(mda_raw)
         clean_mda = clean_mda_narrative(routed_mda) # BUG FIX: Assigned output to clean_mda
         mda_chunks = semantic_sentence_splitter(clean_mda, max_chars=1500)
         for i, content in enumerate(mda_chunks):
@@ -286,8 +411,23 @@ def process_filing_to_chunks(filing, ticker, f_date):
 
     return chunks_to_db
 
-def ingest_sec_chunks(conn, ticker="MSFT"):
+def ingest_sec_chunks( conn, ticker="MSFT"):
+    """
+    Manages the extraction, cleaning, and chunking of critical narrative sections 
+    (MD&A and Risk Factors) from raw SEC 10-K and 10-Q filings.
+
+    Uses raw SEC Edgar data for downstream  NLP pipeline. 
+    It dynamically routes the document parsing based on the filing type, passes the raw 
+    text through aggressive cleaning criteria, and splits the  narrative into 
+    tokenization-safe chunks formatted for Database insertion and downstream sentiment analysis.
+
+    Args:
+            conn: Db connection object
+            ticker: str
+   
+    """
     print("\n--- Starting SEC MD&A and Risk Extraction ---")
+
     company = Company(ticker)
     filings = company.get_filings(form=["10-K", "10-Q"]).filter(filing_date="2018-01-01:")
     
@@ -301,20 +441,28 @@ def ingest_sec_chunks(conn, ticker="MSFT"):
         all_chunks
     )
     conn.commit()
-    print(f"✅ Staged {len(all_chunks)} SEC text chunks to Turso.")
+    print(f"Stored {len(all_chunks)} SEC text chunks to Turso.")
 
 
-# ==========================================
-# 4. TRANSCRIPTS PIPELINE
-# ==========================================
+#Transcripts Pipeline
 def split_transcript_by_turns(turns):
+    """
+    Helper Function to split transcript into prepared and Question and answer section.
+    Uses regex and word matching logic.
+    
+    args: turn (json object having speaker_name, text and title)
+    returns prepped_text and QAA_text
+
+    
+
+    """
     prepped_list, qa_list = [], []
     is_qa_started = False
     qa_markers = ["q and a", "q&a", "q and a"]
 
     for turn in turns:
-        speaker_name = turn.speaker_info.name if turn.speaker and hasattr(turn.speaker_info, 'name') else "Unknown"
-        speaker_title = turn.speaker_info.title if turn.speaker and hasattr(turn.speaker_info, 'title') else "Unknown" 
+        speaker_name = turn.speaker_info.name 
+        speaker_title = turn.speaker_info.title  
         text = turn.text if turn.text else ""
         
         if not is_qa_started and any(marker in text.lower() for marker in qa_markers):
@@ -327,6 +475,12 @@ def split_transcript_by_turns(turns):
     return prepped_list, qa_list
 
 def ingest_transcripts(conn, ticker="MSFT"):
+    """
+    Uses Earnings Call API to fetch transcripts for a ticker. 
+    We grab transcripts at level 2 which gives us speaker level distinction. The transcripts are 
+    separated into prepped and qa for sentiment analysis.   
+
+    """
     print("\n--- Starting Earnings Call Transcripts Ingestion ---")
     company = earningscall.get_company(ticker)
     historical_data = []
@@ -360,14 +514,14 @@ def ingest_transcripts(conn, ticker="MSFT"):
         historical_data
     )
     conn.commit()
-    print(f"✅ Staged {len(historical_data)} transcripts to Turso.")
+    print(f" Stored {len(historical_data)} transcripts to Turso.")
 
 
-# ==========================================
-# MASTER EXECUTION ORCHESTRATOR
-# ==========================================
+
+
+# Final Script to run all ingest functions. 
 if __name__ == "__main__":
-    print("🚀 Initializing ETL Pipeline...")
+    print("Initializing ETL Pipeline...")
     
     # 1. Setup SEC Identity (Required before instantiating Company())
     setup_sec_api()
@@ -376,6 +530,7 @@ if __name__ == "__main__":
     db_conn = get_db_connection()
     
     if db_conn:
+        
         create_tables(db_conn)
         
         # 3. Run Pipelines
@@ -384,4 +539,4 @@ if __name__ == "__main__":
         ingest_sec_chunks(db_conn, ticker="MSFT")
         ingest_transcripts(db_conn, ticker="MSFT")
         
-        print("\n🎉 Full Database Build Complete!")
+    print(" Full Database Build Complete!")
