@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from pandas.tseries.offsets import BDay
 from transformers import pipeline
-from database_builder import get_db_connection, semantic_sentence_splitter
+from src.database_builder import get_db_connection, semantic_sentence_splitter
 
 
 def load_finbert(model_name="ProsusAI/finbert"):
@@ -332,7 +332,7 @@ def build_feature_dataset(conn, finbert):
     df_fin = fetch_table(conn, "SELECT * FROM sec_financials ORDER BY effective_date")
 
     transcript_features = process_transcripts(finbert, df_transcripts)
-    sec_features = aggregate_sec_chunks(df_sec)
+    sec_features = build_sec_features(df_sec)
     fin_features = calculate_financial_ratios(df_fin)
 
     df_market["trading_date"] = pd.to_datetime(df_market["trading_date"])
@@ -389,7 +389,7 @@ def main():
     conn = get_db_connection()
     finbert = load_finbert()
 
-    # score_sec_chunks_with_finbert(conn, finbert)
+    score_sec_chunks_with_finbert(conn, finbert)
 
     df_features = build_feature_dataset(conn, finbert)
     save_feature_dataset(df_features)
