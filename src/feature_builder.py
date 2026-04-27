@@ -156,7 +156,7 @@ def build_sec_features(df_raw):
 
     # 7. The Look-Ahead Bias Protection (Effective Date T+1)
     df_pivot['effective_date'] = df_pivot['filing_date'] + pd.Timedelta(days=1)
-    
+    df_pivot.drop(columns='doc_id',inplace=True)
     print(f"Generated NLP features for {len(df_pivot)} documents.")
     return df_pivot    
 
@@ -229,85 +229,51 @@ def add_temporal_signals(df_golden):
     return df
 
 
-def build_market_and_vol_features(df_golden):
+def build_market_and_vol_features(df, window=21):
     """
-    The Ultimate Market Engine. 
-    Calculates Returns, Garman-Klass Volatility, Sector Alpha, Macro Trends, and Liquidity.
-    Assumes df_golden has: msft_open, msft_high, msft_low, msft_close, msft_volume, 
-                           qqq_close, spy_close, vix_close, tnx_yield
+    : 
+    - All features lagged by 1 to prevent look-ahead bias.
+    - Features anchored to t-1.
     """
-    print("📈 Engineering Market, Macro, Sector, and Volatility Signals...")
-    
-    df = df_golden.copy()
-    df['trading_date'] = pd.to_datetime(df['trading_date'])
-    df.sort_values('trading_date', inplace=True)
-    window = 21 # 1 Trading Month
-    
-    # ==========================================
-    # 1. BASE RETURNS (The Foundation)
-    # ==========================================
-    df['msft_return'] = df['msft_close'].pct_change()
-    df['qqq_return'] = df['qqq_close'].pct_change()
-    df['spy_return'] = df['spy_close'].pct_change()
-    
-    # ==========================================
-    # 2. SECTOR & MARKET ALPHA (Relative Context)
-    # ==========================================
-    # If negative, MSFT is dropping while the market is fine (Idiosyncratic Risk)
-    df['msft_vs_tech'] = df['msft_return'] - df['qqq_return']
-    df['msft_vs_market'] = df['msft_return'] - df['spy_return']
-    
-    # ==========================================
-    # 3. MACRO SIGNALS (External Pressures)
-    # ==========================================
-    df['vix_level'] = df['vix_close']
-    df['vix_5d_trend'] = df['vix_close'].diff(5)
-    
-    df['yield_10y_level'] = df['tnx_yield']
-    df['yield_10y_delta_5d'] = df['tnx_yield'].diff(5) # The "Shock" indicator
-    
-    # ==========================================
-    # 4. VOLATILITY ESTIMATORS (Risk Tracking)
-    # ==========================================
-    # Standard Close-to-Close
-    df['vol_rolling_21d'] = df['msft_return'].rolling(window).std() * np.sqrt(252)
-    df['qqq_vol_21d'] = df['qqq_return'].rolling(window).std() * np.sqrt(252)
-    
-    # Garman-Klass (Intraday High-Resolution Risk)
-    log_ho = np.log(df['msft_high'] / df['msft_open'])
-    log_lo = np.log(df['msft_low'] / df['msft_open'])
-    log_co = np.log(df['msft_close'] / df['msft_open'])
-    
-    gk_daily = 0.5 * (log_ho - log_lo)**2 - (2 * np.log(2) - 1) * log_co**2
-    # Ensure no negative values before sqrt (can happen with tiny data errors)
-    gk_daily = np.maximum(gk_daily, 0) 
-    df['vol_garman_klass'] = np.sqrt(gk_daily).rolling(window).mean() * np.sqrt(252)
-    
-    # ==========================================
-    # 5. LIQUIDITY RISK (Amihud & Volume)
-    # ==========================================
-    df['vol_surge'] = df['msft_volume'] / df['msft_volume'].rolling(window).mean()
-    
-    # Amihud Illiquidity (Price impact per dollar traded)
-    dollar_vol = df['msft_close'] * df['msft_volume']
-    df['amihud_ratio'] = (df['msft_return'].abs() / dollar_vol) * 1e6 
-    
-    # ==========================================
-    # 6. TECHNICALS (Mean Reversion)
-    # ==========================================
-    df['ma200'] = df['msft_close'].rolling(window=200).mean()
-    # Distance from 200 DMA (The "Rubber Band" effect)
-    df['dist_from_ma200'] = (df['msft_close'] / df['ma200']) - 1
-    
-    # Clean up intermediate tech column
-    df.drop(columns=['ma200'], inplace=True)
-    
-    # ==========================================
-    # 7. THE TARGET VARIABLE (Y)
-    # ==========================================
-    # We shift the 21-day realized volatility BACKWARDS by 21 days.
-    # This means today's row contains the actual volatility that occurred over the NEXT month.
-    df['target_vol_21d'] = df['msft_return'].shift(-window).rolling(window).std() * np.sqrt(252)
-    
-    return df
+    print("Engineering sanitized features...")
+    df = df.copy()
+    df["trading_date"] = pd.to_datetime(df["trading_date"])
+    df = df.sort_values("trading_date")
 
+    # 1. Market Returns (The Source of Truth)
+    df["msft_return"] = df["msft_close"].pct_change()
+    df["qqq_return"] = df["qqq_close"].pct_change()
+    df["spy_return"] = df["spy_close"].pct_change()
+
+    # 2. Performance Spread (Lagged by 1 to be safe)
+    df["msft_vs_tech"] = (df["msft_return"] - df["qqq_return"]).shift(1)
+    df["msft_vs_market"] = (df["msft_return"] - df["spy_return"]).shift(1)
+
+    # 3. Macro features (Lagged by 1 to represent yesterday's information)
+    df["vix_level"] = df["vix_close"].shift(1)
+    df["vix_5d_trend"] = df["vix_close"].diff(5).shift(1)
+    df["yield_10y_level"] = df["tnx_yield"].shift(1)
+    df["yield_10y_delta_5d"] = df["tnx_yield"].diff(5).shift(1)
+
+    # 4. Volatility Estimators (Anchored to past, shifted by 1)
+    df["vol_rolling_21d"] = (df["msft_return"].rolling(window).std().shift(1)) * np.sqrt(252)
+    df["qqq_vol_21d"] = (df["qqq_return"].rolling(window).std().shift(1)) * np.sqrt(252)
+
+    # 5. Garman Klass (Lagged to represent yesterday's risk profile)
+    log_ho = np.log(df["msft_high"] / df["msft_open"])
+    log_lo = np.log(df["msft_low"] / df["msft_open"])
+    log_co = np.log(df["msft_close"] / df["msft_open"])
+    gk_daily = 0.5 * (log_ho - log_lo) ** 2 - (2 * np.log(2) - 1) * log_co**2
+    df["vol_garman_klass"] = np.sqrt(np.maximum(gk_daily, 0)).rolling(window).mean().shift(1) * np.sqrt(252)
+
+    # 6. Liquidity (Lagged)
+    df["vol_surge"] = (df["msft_volume"] / df["msft_volume"].rolling(window).mean()).shift(1)
+    
+    # 7. Moving Averages (Lagged)
+    df["dist_from_ma200"] = ((df["msft_close"] / df["msft_close"].rolling(200).mean()) - 1).shift(1)
+
+    # 8. Target Feature (Future Volatility)
+    # This is the only one NOT lagged by 1, as it represents the future.
+    df["target_vol_21d"] = df["msft_return"].rolling(window).std().shift(-window) * np.sqrt(252)
+
+    return df.dropna() # Critical: Removes NaNs from shifts

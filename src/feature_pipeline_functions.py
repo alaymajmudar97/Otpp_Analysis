@@ -267,61 +267,56 @@ def add_temporal_signals(df_golden):
     return df
 
 
-def build_market_and_vol_features(df_golden, window=21):
-    """Create market, volatility, liquidity, and target features."""
-    
-    
-    print("Engineering market and volatility features...")
-    df = df_golden.copy()
+def build_market_and_vol_features(df, window=21):
+    """
+    Institutional Grade Engineering: 
+    - All features lagged by 1 to prevent look-ahead bias.
+    - Features anchored to t-1, Target anchored to t.
+    """
+    print("Engineering sanitized features...")
+    df = df.copy()
     df["trading_date"] = pd.to_datetime(df["trading_date"])
     df = df.sort_values("trading_date")
 
-    #Market returns
+    # 1. Market Returns (The Source of Truth)
     df["msft_return"] = df["msft_close"].pct_change()
     df["qqq_return"] = df["qqq_close"].pct_change()
     df["spy_return"] = df["spy_close"].pct_change()
 
-    df["msft_vs_tech"] = df["msft_return"] - df["qqq_return"]
-    df["msft_vs_market"] = df["msft_return"] - df["spy_return"]
+    # 2. Performance Spread (Lagged by 1 to be safe)
+    df["msft_vs_tech"] = (df["msft_return"] - df["qqq_return"]).shift(1)
+    df["msft_vs_market"] = (df["msft_return"] - df["spy_return"]).shift(1)
 
-    #Macro features
-    df["vix_level"] = df["vix_close"]
-    df["vix_5d_trend"] = df["vix_close"].diff(5)
-    df["yield_10y_level"] = df["tnx_yield"]
-    df["yield_10y_delta_5d"] = df["tnx_yield"].diff(5)
+    # 3. Macro features (Lagged by 1 to represent yesterday's information)
+    df["vix_level"] = df["vix_close"].shift(1)
+    df["vix_5d_trend"] = df["vix_close"].diff(5).shift(1)
+    df["yield_10y_level"] = df["tnx_yield"].shift(1)
+    df["yield_10y_delta_5d"] = df["tnx_yield"].diff(5).shift(1)
 
-    
-    #volatality estimators
-    df["vol_rolling_21d"] = df["msft_return"].rolling(window).std() * np.sqrt(252)
-    df["qqq_vol_21d"] = df["qqq_return"].rolling(window).std() * np.sqrt(252)
+    # 4. Volatility Estimators (Anchored to past, shifted by 1)
+    df["vol_rolling_21d"] = (df["msft_return"].rolling(window).std().shift(1)) * np.sqrt(252)
+    df["qqq_vol_21d"] = (df["qqq_return"].rolling(window).std().shift(1)) * np.sqrt(252)
 
-    
-    #Researched volatality Garman Klass Intraday risk
+    # 5. Garman Klass (Lagged to represent yesterday's risk profile)
     log_ho = np.log(df["msft_high"] / df["msft_open"])
     log_lo = np.log(df["msft_low"] / df["msft_open"])
     log_co = np.log(df["msft_close"] / df["msft_open"])
-
     gk_daily = 0.5 * (log_ho - log_lo) ** 2 - (2 * np.log(2) - 1) * log_co**2
-    gk_daily = np.maximum(gk_daily, 0)
-    df["vol_garman_klass"] = np.sqrt(gk_daily).rolling(window).mean() * np.sqrt(252)
+    df["vol_garman_klass"] = np.sqrt(np.maximum(gk_daily, 0)).rolling(window).mean().shift(1) * np.sqrt(252)
 
-    
-    #Liquidity risk 
-    df["vol_surge"] = df["msft_volume"] / df["msft_volume"].rolling(window).mean()
-
+    # 6. Liquidity (Lagged)
+    df["vol_surge"] = (df["msft_volume"] / df["msft_volume"].rolling(window).mean()).shift(1)
     dollar_vol = df["msft_close"] * df["msft_volume"]
-    df["amihud_ratio"] = (df["msft_return"].abs() / dollar_vol) * 1e6
+    df["amihud_ratio"] = (df["msft_return"].abs() / dollar_vol).shift(1) * 1e6
 
-    
-    df["ma200"] = df["msft_close"].rolling(200).mean()
-    df["dist_from_ma200"] = (df["msft_close"] / df["ma200"]) - 1
-    df.drop(columns=["ma200"], inplace=True)
+    # 7. Moving Averages (Lagged)
+    df["dist_from_ma200"] = ((df["msft_close"] / df["msft_close"].rolling(200).mean()) - 1).shift(1)
 
-    #Target Feature: Annualized 21 day future volatality 
-    df["target_vol_21d"] = df["msft_return"].shift(-window).rolling(window).std() * np.sqrt(252)
+    # 8. Target Feature (Future Volatility)
+    # This is the only one NOT lagged by 1, as it represents the future.
+    df["target_vol_21d"] = df["msft_return"].rolling(window).std().shift(-window) * np.sqrt(252)
 
-    return df
-
+    return df.dropna() # Critical: Removes NaNs from shifts
 
 def fetch_table(conn, query):
     """Run a SQL query and return the result as a dataframe."""
