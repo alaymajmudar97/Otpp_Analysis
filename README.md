@@ -108,7 +108,7 @@ The LightGBM model gives the following key metrics on the unseen test set:
 
 * **Single Asset Focus:** The model is currently tuned specifically for MSFT. Cross-sectional generalization across other equities has not yet been tested.
 * **Signal Frequency:** Earnings and filings only happen quarterly. While market data fills the daily gaps, the text signals update infrequently.
-* **Extreme Tail Risk:** As shown by the gap between MAE and RMSE, the model—like most quantitative systems—struggles to perfectly predict the exact magnitude of sudden, massive "Black Swan" volatility spikes.
+* **Extreme Tail Risk:** As shown by the gap between MAE and RMSE, the model struggles on higher risk events. 
 
 ---
 
