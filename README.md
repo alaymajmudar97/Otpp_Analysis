@@ -9,7 +9,7 @@ I built a machine learning pipeline that combines traditional market signals, ma
 
 ## Project Objective
 
-The goal is to predict **21-day forward realized volatility** for MSFT, acting as a forward-looking risk estimate. I am not trying to predict stock price direction or next-day returns. Core hypothesis is that unstructured sentiment features—when combined with traditional quantitative market signals—can incrementally improve near-term risk forecasting
+The goal is to predict **21-day forward realized volatility** for MSFT, acting as a forward-looking risk estimate. I am not trying to predict stock price direction or next-day returns. Core hypothesis is that  sentiment features—when combined with traditional quantitative market signals—can incrementally improve near-term risk forecasting
 
 ## How the Pipeline Works
 
@@ -33,6 +33,7 @@ The pipeline operates in six main stages:
 | `df_features.csv` | Modeling Data | The final daily feature matrix containing all predictors and the target variable. |
 | `Volatility-Forecasting.pptx` | Presentation | Details the objective, architecture, leakage controls, validation approach, and final results. |
 
+[Presentation link](https://docs.google.com/presentation/d/1d6g-tHT0OyjUDwuLmqNA59zkbT9YElYC/edit?usp=sharing&ouid=103222298887451747452&rtpof=true&sd=true)
 ---
 
 ## Data Sources & Inputs
@@ -40,16 +41,16 @@ The pipeline operates in six main stages:
 ### 1. Market and Macro Data
  Fetches historical data starting from 2018 for MSFT, the VIX, a 10-year Treasury yield proxy (^TNX), QQQ, and SPY using the `yfinance` library. 
 
-These raw numbers are transformed into risk-sensitive features, such as rolling volatility, cross-asset relative returns, yield changes, and volume-based stress indicators. You will see features like `vixlevel`, `volrolling21d`, `qqqvol21d`, and `volsurge` in the final dataset.
+These raw numbers are transformed into risk-sensitive features, such as rolling volatility, cross-asset relative returns, yield changes, and volume-based indicators. You will see features like `vixlevel`, `volrolling21d`, `qqqvol21d`, and `volsurge` in the final dataset.
 
 ### 2. Financial Filings (Accounting)
-The pipeline extracts 10-K and 10-Q filings from the SEC, pulling raw line items like revenue, net income, and operating cash flow. Because raw financial numbers naturally grow over time, I normalize them into stationary accounting ratios like Return on Assets (`roa`), `debttoasset`, and Free Cash Flow margin (`fcfmargin`) for modeling.
+The pipeline extracts 10-K and 10-Q filings from the SEC, pulling raw line items like revenue, net income, and operating cash flow. Because raw financial numbers naturally grow over time, I normalize them into stationary accounting ratios like Return on Assets (`roa`), 'net_income', and Free Cash Flow margin (`fcfmargin`) for modeling.
 
 ### 3. SEC Filing Text
-Extract the "Management Discussion and Analysis" and "Risk Factor" sections from the SEC filings. The text goes through a rigorous cleaning process: I filter out tables, remove boilerplate, and chop the text into sentence-safe chunks that fit into our NLP model. These chunks are scored for sentiment and aggregated into daily document-level features. 
+Extract the "Management Discussion and Analysis" and "Risk Factor" sections from the SEC filings. The text goes through a  cleaning process: I filter out tables, remove boilerplate, and clean the text into sentence-safe chunks that fit into our NLP model. These chunks are scored for sentiment and aggregated into daily document-level features. 
 
 ### 4. Earnings Call Transcripts
-using earnings call API,  pulled Microsoft earnings call transcripts from 2019 onwards (API limit No data before 2019).  splitted the text into two distinct parts: **Management Prepared Remarks** and **Analyst Q&A**. These sections are scored independently because scripted management messaging and unscripted Q&A dynamics often signal different types of risk.
+Using earnings call API,  pulled Microsoft earnings call transcripts from 2019 onwards (API limit No data before 2019).  splitted the text into two distinct parts: **Management Prepared Remarks** and **Analyst Q&A**. These sections are scored independently because scripted management messaging and unscripted Q&A dynamics often signal different types of risk.
 
 ---
 
@@ -69,7 +70,7 @@ For every text chunk, I calculate net sentiment (positive minus negative), avera
 The target is **21-day forward realized volatility**. We calculate this by taking the standard deviation of MSFT's daily returns over a rolling 21-day window, annualized, and shifted forward to ensure zero look-ahead bias.
 
 ### Feature Groupings Overview
-* **Accounting:** `roa`, `cashcoverage`, `debttoasset`, `fcfmargin`
+* **Accounting:** `roa`, `cashcoverage`, `net_income`, `fcfmargin`
 * **SEC Text:** `MDA_Sentiment`, `Risk_Factor_Sentiment`
 * **Earnings Call Text:** `preppedsentiment`, `qasentiment`, `qadispersion`
 * **Event Recency:** `dayssinceearnings`, `dayssincefiling`
@@ -108,7 +109,8 @@ The LightGBM model gives the following key metrics on the unseen test set:
 
 * **Single Asset Focus:** The model is currently tuned specifically for MSFT. Cross-sectional generalization across other equities has not yet been tested.
 * **Signal Frequency:** Earnings and filings only happen quarterly. While market data fills the daily gaps, the text signals update infrequently.
-* **Extreme Tail Risk:** As shown by the gap between MAE and RMSE, the model struggles on higher risk events. 
+* **Extreme Tail Risk:** As shown by the gap between MAE and RMSE, the model struggles on higher risk events.
+
 
 ---
 
