@@ -38,6 +38,8 @@ The pipeline operates in six main stages:
 
 ## Data Sources & Inputs
 
+[Database](https://app.turso.tech/alaymajmudar97/databases/msftanalysis)
+
 ### 1. Market and Macro Data
  Fetches historical data starting from 2018 for MSFT, the VIX, a 10-year Treasury yield proxy (^TNX), QQQ, and SPY using the `yfinance` library. 
 
